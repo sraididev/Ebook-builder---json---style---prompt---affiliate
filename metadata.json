@@ -1,0 +1,5 @@
+{
+  "name": "Ebook builder - json - style - prompt - affiliate",
+  "description": "A React application that renders JSON ebook data into a styled, print-ready HTML format.",
+  "requestFramePermissions": []
+}
