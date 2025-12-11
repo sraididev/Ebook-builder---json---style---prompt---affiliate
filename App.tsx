@@ -247,6 +247,9 @@ interface JsonInputFile {
   content: string;
 }
 
+// Utility to delay promise
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 const App: React.FC = () => {
   const [jsonInput, setJsonInput] = useState<JsonInputFile | null>(null);
   const [status, setStatus] = useState<"idle" | "generating" | "complete" | "error">("idle");
@@ -339,17 +342,44 @@ const App: React.FC = () => {
 
       const prompt = selectedPrompt.template(jsonInput.content, affiliateContext);
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: EBOOK_SCHEMA,
-          temperature: 0.7,
-        }
-      });
+      // RETRY LOGIC for 503 errors
+      let response;
+      const maxRetries = 3;
+      let lastError;
 
-      let text = response.text;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: EBOOK_SCHEMA,
+              temperature: 0.7,
+            }
+          });
+          // If successful, break loop
+          break;
+        } catch (err: any) {
+          lastError = err;
+          const errorStr = err.message || JSON.stringify(err);
+          
+          // Check if error is retryable (503 Service Unavailable or 500 Internal Error)
+          const isRetryable = errorStr.includes('503') || errorStr.includes('overloaded') || errorStr.includes('500');
+          
+          if (attempt < maxRetries && isRetryable) {
+            console.log(`Attempt ${attempt} failed with 503. Retrying in ${attempt * 2} seconds...`);
+            // Exponential backoff: 2s, 4s, 6s...
+            await delay(attempt * 2000);
+            continue;
+          }
+          
+          // If not retryable or max retries reached, throw the error
+          throw err;
+        }
+      }
+
+      let text = response?.text;
       if (!text) throw new Error("No content generated from API. The model might have been blocked.");
 
       // Clean up potential markdown blocks even in JSON mode
@@ -370,16 +400,23 @@ const App: React.FC = () => {
       console.error("Full Error Object:", error);
       
       let friendlyMessage = "An unexpected error occurred.";
+      const errorStr = error.message || JSON.stringify(error);
       
-      if (error instanceof Error) {
-        // Pass through our custom errors
-        friendlyMessage = error.message;
-        
-        // Handle Google GenAI specific errors if detectable via string matching
-        if (error.message.includes("403")) {
-            friendlyMessage = "API Key Invalid or Quota Exceeded (403). Please check your Vercel API_KEY variable.";
-        } else if (error.message.includes("400")) {
-            friendlyMessage = "Bad Request (400). The prompt or JSON structure might be invalid.";
+      if (errorStr.includes("503") || errorStr.includes("overloaded")) {
+          friendlyMessage = "Server Busy (503): The AI model is currently overloaded. We tried multiple times but it is still busy. Please wait a moment and try again.";
+      } else if (errorStr.includes("403")) {
+          friendlyMessage = "API Key Invalid or Quota Exceeded (403). Please check your Vercel API_KEY variable.";
+      } else if (errorStr.includes("400")) {
+          friendlyMessage = "Bad Request (400). The prompt or JSON structure might be invalid.";
+      } else {
+        // Attempt to parse user-facing message from raw JSON string errors
+        try {
+          const jsonError = JSON.parse(errorStr);
+          if (jsonError?.error?.message) {
+            friendlyMessage = jsonError.error.message;
+          }
+        } catch(e) {
+          friendlyMessage = error.message || "Unknown error";
         }
       }
 
