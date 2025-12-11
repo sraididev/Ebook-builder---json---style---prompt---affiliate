@@ -5,7 +5,7 @@ import { CoverPage } from './components/CoverPage';
 import { CopyrightPage } from './components/CopyrightPage';
 import { TableOfContents } from './components/TableOfContents';
 import { ChapterRender } from './components/ChapterRender';
-import { Printer, FileText, Sparkles, Loader2, ArrowLeft, Upload, FileJson, Trash2, Palette, Check, PenTool, Layout, BookOpen, Link as LinkIcon, Plus } from 'lucide-react';
+import { Printer, FileText, Sparkles, Loader2, ArrowLeft, Upload, FileJson, Trash2, Palette, Check, PenTool, Layout, BookOpen, Link as LinkIcon, Plus, AlertCircle } from 'lucide-react';
 
 // --- THEME DEFINITIONS ---
 const THEMES: Theme[] = [
@@ -312,7 +312,13 @@ const App: React.FC = () => {
     setErrorMessage(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      // 1. Check for API Key presence
+      const apiKey = process.env.API_KEY;
+      if (!apiKey || apiKey === "" || apiKey === "undefined") {
+        throw new Error("Missing API Key. Ensure 'API_KEY' is set in your Vercel Environment Variables and that you have redeployed after setting it.");
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
       
       // Construct Affiliate Context
       let affiliateContext = "";
@@ -343,15 +349,41 @@ const App: React.FC = () => {
         }
       });
 
-      const text = response.text;
-      if (!text) throw new Error("No content generated");
+      let text = response.text;
+      if (!text) throw new Error("No content generated from API. The model might have been blocked.");
 
-      const data = JSON.parse(text) as GeneratedEbook;
+      // Clean up potential markdown blocks even in JSON mode
+      text = text.replace(/^```json\s*/, "").replace(/\s*```$/, "");
+
+      let data: GeneratedEbook;
+      try {
+        data = JSON.parse(text) as GeneratedEbook;
+      } catch (parseError) {
+        console.error("JSON Parse Error:", parseError);
+        console.log("Raw Text snippet:", text.substring(0, 500) + "...");
+        throw new Error("Generated content was cut off or malformed. This usually happens if the Ebook is too long for a single generation. Try reducing the number of chapters in your JSON input.");
+      }
+
       setGeneratedData(data);
       setStatus("complete");
-    } catch (error) {
-      console.error(error);
-      setErrorMessage("Failed to generate ebook. Please check your API key or the complexity of your JSON structure.");
+    } catch (error: any) {
+      console.error("Full Error Object:", error);
+      
+      let friendlyMessage = "An unexpected error occurred.";
+      
+      if (error instanceof Error) {
+        // Pass through our custom errors
+        friendlyMessage = error.message;
+        
+        // Handle Google GenAI specific errors if detectable via string matching
+        if (error.message.includes("403")) {
+            friendlyMessage = "API Key Invalid or Quota Exceeded (403). Please check your Vercel API_KEY variable.";
+        } else if (error.message.includes("400")) {
+            friendlyMessage = "Bad Request (400). The prompt or JSON structure might be invalid.";
+        }
+      }
+
+      setErrorMessage(friendlyMessage);
       setStatus("error");
     }
   };
@@ -360,7 +392,6 @@ const App: React.FC = () => {
     setStatus("idle");
     setJsonInput(null);
     setGeneratedData(null);
-    // Optional: Keep affiliate links or clear them? Let's keep them for convenience unless user reloads.
   };
 
   // --- VIEW: INPUT / HERO ---
@@ -571,8 +602,12 @@ const App: React.FC = () => {
           </div>
 
           {errorMessage && (
-            <div className="p-3 bg-red-50 text-red-600 rounded text-sm text-center border border-red-100 mb-6">
-              {errorMessage}
+            <div className="p-4 bg-red-50 text-red-700 rounded-md text-sm border border-red-200 mb-6 flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold block mb-1">Error Generating Ebook:</span>
+                {errorMessage}
+              </div>
             </div>
           )}
 
